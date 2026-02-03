@@ -28,6 +28,10 @@ test: classifier.exe
 	./classifier.exe w14-f15_instructor_student.csv w16_instructor_student.csv > instructor_student.out.txt
 	diff -q instructor_student.out.txt instructor_student.out.correct
 
+# Print measured metrics (accuracy, runtime, vocab)
+metrics: classifier.exe
+	python3 metrics.py
+
 classifier.exe: classifier.cpp
 	$(CXX) $(CXXFLAGS) classifier.cpp -o $@
 
@@ -36,6 +40,7 @@ classifier.exe: classifier.cpp
 
 # these targets do not create any files
 .PHONY: clean
+.PHONY: metrics
 clean :
 	rm -vrf *.o *.exe *.gch *.dSYM *.stackdump *.out.txt
 

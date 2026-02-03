@@ -11,10 +11,11 @@ using namespace std;
 #include <vector>
 #include <assert.h>
 #include <algorithm>
-#include  "csvstream.hpp" 
+#include  "csvstream.hpp"
 #include <cmath>
+#include <cctype>
 
-// void BOW(int& n_o_p,map<string,int>&n_o_p_containing_word, 
+// void BOW(int& n_o_p,map<string,int>&n_o_p_containing_word,
 //     map<string,int>&num_of_content_with_tag, set<string>&total_words,
 //     map<pair<string,string>,int> &pair_of_cw_count){
 
@@ -29,6 +30,18 @@ set<string> unique_words(const string &str) {
   }
   return words;
 }
+
+// EFFECTS: Tokenize into whitespace-delimited words (lowercased).
+static vector<string> tokenize_lower(const string &str) {
+  istringstream source(str);
+  vector<string> words;
+  string word;
+  while (source >> word) {
+    for (char &c : word) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    words.push_back(word);
+  }
+  return words;
+}
 class Classifier{
     private:
         int n_o_p = 0; //number of posts
@@ -36,6 +49,10 @@ class Classifier{
         map<string,int> num_of_content_with_tag;
         set<string>total_words;
         map<pair<string,string>,int> pair_of_cw_count;
+
+        // Improved model (Multinomial Naive Bayes with Laplace smoothing)
+        map<pair<string, string>, int> word_count;
+        map<string, int> total_words_in_class;
     public:
         void train(const string &filename, bool trainOnly){
             csvstream csvin(filename);
@@ -52,11 +69,29 @@ class Classifier{
                     n_o_p_containing_word[s]+=1;
                     pair_of_cw_count[{row["tag"],s}]++;
                 }
-                num_of_content_with_tag[row["tag"]]++;            
+                num_of_content_with_tag[row["tag"]]++;
                 //BOW[row["tag"]].insert(uw_set.begin(),uw_set.end());
                 total_words.insert(uw_set.begin(),uw_set.end());
             }
-                if (trainOnly) cout << endl;
+        }
+
+        // Improved training: uses token counts (not just presence/absence).
+        void train_improved(const string &filename){
+            csvstream csvin(filename);
+            map<string, string> row;
+
+            while (csvin >> row) {
+                n_o_p++;
+                const string &tag = row["tag"];
+                num_of_content_with_tag[tag]++;
+
+                vector<string> toks = tokenize_lower(row["content"]);
+                for (const string &w : toks) {
+                    word_count[{tag, w}]++;
+                    total_words_in_class[tag]++;
+                    total_words.insert(w);
+                }
+            }
         }
         void print_results(bool trainOnly){
             cout << "trained on " << n_o_p << " examples" << endl;
@@ -71,7 +106,6 @@ class Classifier{
                      << " examples, log-prior = " << log_temp << endl;
 
                 }
-                cout <<endl;
                 cout << "classifier parameters:"<<endl;
                 for (const auto &A: pair_of_cw_count){
                 string tag = A.first.first;
@@ -84,7 +118,7 @@ class Classifier{
             }
              cout << endl;
             }
-            
+
         }
 
     double find_Score(string tag, const set<string> &words){
@@ -112,6 +146,21 @@ class Classifier{
         return score;
     }
 
+    // Improved scoring: Multinomial Naive Bayes with Laplace smoothing.
+    double find_Score_improved(const string &tag, const vector<string> &tokens) const {
+        const int V = static_cast<int>(total_words.size());
+        double score = log((double)num_of_content_with_tag.at(tag) / n_o_p);
+
+        const int denom = total_words_in_class.at(tag) + V;
+        for (const string &w : tokens) {
+            int c = 0;
+            auto it = word_count.find({tag, w});
+            if (it != word_count.end()) c = it->second;
+            score += log((double)(c + 1) / denom);
+        }
+        return score;
+    }
+
         string predict(const string &content){
             set<string> words = unique_words(content);
             string label;
@@ -134,11 +183,33 @@ class Classifier{
             }
             return label;
         }
+
+        string predict_improved(const string &content) const {
+            vector<string> tokens = tokenize_lower(content);
+            string label;
+            bool first = true;
+            double best = -INFINITY;
+            for (const auto& A : num_of_content_with_tag){
+                const string &tag = A.first;
+                double s = find_Score_improved(tag, tokens);
+                if (first || s > best || (s == best && tag < label)) {
+                    best = s;
+                    label = tag;
+                    first = false;
+                }
+            }
+            return label;
+        }
 };
 int main(int argc, char* argv[]) {
     cout.precision(3);
+    bool improved = false;
+    if (argc >= 2 && strcmp(argv[argc - 1], "--improved") == 0) {
+        improved = true;
+        argc -= 1; // ignore flag for positional parsing
+    }
     if (argc!=2 && argc!=3) {
-        cout << "Usage: classifier.exe TRAIN_FILE [TEST_FILE]" << endl;
+        cout << "Usage: classifier.exe TRAIN_FILE [TEST_FILE] [--improved]" << endl;
         return 1;
     }
     ifstream input; ifstream input2;
@@ -152,10 +223,15 @@ int main(int argc, char* argv[]) {
     Classifier classifier;
     bool testOnly = argc==2;
     if (testOnly) cout << "training data:" <<endl;
-    classifier.train(filename, testOnly);
+    if (improved) {
+        classifier.train_improved(filename);
+    } else {
+        classifier.train(filename, testOnly);
+    }
     classifier.print_results(testOnly);
     if (argc==3) {
     string test_file = argv[2];
+        cout << endl;
         cout << "test data:" << endl;
         csvstream csvin(test_file);
         map<string, string> row;
@@ -164,8 +240,15 @@ int main(int argc, char* argv[]) {
         while (csvin >> row) {
             string clabel = row["tag"];
             string content = row["content"];
-            string predicted = classifier.predict(content);
-            double score = classifier.find_Score(predicted, unique_words(content));
+            string predicted;
+            double score;
+            if (improved) {
+                predicted = classifier.predict_improved(content);
+                score = classifier.find_Score_improved(predicted, tokenize_lower(content));
+            } else {
+                predicted = classifier.predict(content);
+                score = classifier.find_Score(predicted, unique_words(content));
+            }
             cout << "  correct = " << clabel
                  << ", predicted = " << predicted
                  << ", log-probability score = " << score << endl;

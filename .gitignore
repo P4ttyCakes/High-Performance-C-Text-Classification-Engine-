@@ -1,0 +1,6 @@
+*.exe
+*.dSYM/
+*.out.txt
+
+# Local duplicate/packaged copy (don’t track)
+p4-ml-classifier/
